@@ -9,6 +9,8 @@ import random
 import ast
 import scipy.sparse
 import numpy as np
+from tqdm import tqdm
+
 
 def load_and_clean_data(nodes_path, edges_path, datadir):
 
@@ -171,20 +173,31 @@ def print_graph_info(G):
         
         click.secho(f"Node ID: {node_id}, Features: {features_str}", fg="green")
         
-# Define function to convert genres to embedding vector
 def get_genre_embedding_vector(genres, embedding_dict, max_length=5):
-    # Lookup embeddings for each genre
-    embeddings = [embedding_dict.get(genre, np.zeros(embedding_dict.shape[1])) for genre in genres]
+    # Determine the dimensionality of the embeddings
+    example_embedding = next(iter(embedding_dict.values()))
+    embedding_dim = example_embedding.shape[0]
     
-    # Handle length variability
+    # Create embeddings for genres
+    embeddings = []
+    for genre in genres:
+        embedding = embedding_dict.get(genre, np.zeros(embedding_dim))
+        embeddings.append(embedding)
+    
+    # Pad or truncate the list of embeddings
     if len(embeddings) > max_length:
-        embeddings = embeddings[:max_length]  # Truncate genre embeddings vector
+        embeddings = embeddings[:max_length]
     else:
-        embeddings += [np.zeros(embedding_dict.shape[1])] * (max_length - len(embeddings))  # Add padding
-
-    # Stack embeddings into a single feature vector
+        embeddings += [np.zeros(embedding_dim)] * (max_length - len(embeddings))
+    
+    # Stack embeddings into a matrix and compute the mean vector
     embedding_matrix = np.vstack(embeddings)
-    return np.mean(embedding_matrix, axis=0)
+    result_vector = np.mean(embedding_matrix, axis=0)
+    
+    return result_vector
+
+def convert_2d_to_1d_embedding_dict(embedding_dict):
+    return {genre: np.array([embedding_dict[genre][i] for i in sorted(embedding_dict[genre])]) for genre in embedding_dict}
 
 def main():
     datadir = os.environ.get("DATA_DIR")
@@ -230,16 +243,43 @@ def main():
     click.secho("Completed Genre Embeddings!", fg="green", bold=True)
     genre_embeddings.to_csv(os.path.join(datadir, 'processed', 'genre_embeddings.csv'))
     
+    # Data Verification for embeddings:
+    example_embedding = genre_embeddings.iloc[0].values
+    embedding_dim = example_embedding.shape[0]
+    print(f"Dimension of a single genre embedding: {embedding_dim}")  
+    consistent_embedding_size = all(embedding.shape[0] == embedding_dim for embedding in genre_embeddings.values)
+    genre_embeddings = genre_embeddings.apply(pd.to_numeric)
+    if not consistent_embedding_size:
+        raise ValueError("Not all genre embeddings have the same size!")
+    else:
+        print("All genre embeddings have the same size.")
+    
     # Integrate embeddings into graph nodes
-    genre_embeddings = pd.read_csv(os.path.join(datadir, 'processed', 'genre_embeddings.csv'), index_col=0)
-    genre_embeddings = genre_embeddings.apply(pd.to_numeric)  # Ensure all values are numeric
-    for node in G.nodes(data=True):
-        node_id = node[0]
-        if 'genres' in G.nodes[node_id]:
-            genres = G.nodes[node_id]['genres']
-            embedding_vector = get_genre_embedding_vector(genres, genre_embeddings.to_dict(orient='index'))
-            click.secho("Added Embedding to node...", fg="green", bold=True)
-            G.nodes[node_id]['embedding'] = embedding_vector
+    # Get total node count
+    # Get total node count
+    totalcount = len(G.nodes)
+    count = 0
+
+    # Initialize tqdm progress bar
+    with tqdm(total=totalcount, desc="Processing Nodes") as pbar:
+        for node, data in G.nodes(data=True):
+            node_id = node
+            if 'genres' in G.nodes[node_id]:
+                genres = G.nodes[node_id]['genres']
+                genre_embeddings_dict = genre_embeddings.to_dict(orient='index')
+                genresdict = convert_2d_to_1d_embedding_dict(genre_embeddings_dict)
+                embedding_vector = get_genre_embedding_vector(genres, genresdict)
+                
+                # Ensure embedding vector has the correct length
+                assert len(embedding_vector) == embedding_dim, "Dimension of embeddings shouldn't change, check logic"
+                
+                G.nodes[node_id]['embedding'] = embedding_vector
+            else:
+                click.secho("Genres list not found", fg="red", bold=True)
+                exit(-1)
+            
+            # Update the progress bar
+            pbar.update(1)
     click.secho("Added Genre embeddings as a feature!", fg="green", bold=True)
     # print_graph_info(G)
 
