@@ -1,19 +1,139 @@
+"""
+data_preprocessing.py
+
+This script performs various data preprocessing tasks for a graph-based data analysis project. 
+It involves loading and cleaning data, constructing a graph, calculating PageRank, 
+visualizing the graph using different tools, processing genre embeddings with BERT, 
+and saving the processed graph with updated embeddings.
+
+Imports:
+- Data manipulation: pandas, numpy
+- Graph handling: networkx, pyvis
+- Visualization: matplotlib
+- Utilities: click, json, os, sys, random, ast, scipy.sparse, concurrent.futures, tqdm
+
+Functions:
+- convert_ndarray_to_list: Converts NumPy arrays to lists.
+- convert_list_to_string: Converts lists to JSON strings.
+- preprocess_graph: Converts node and edge attributes to ensure compatibility with GraphML format.
+- compute_node_embedding: Computes embedding vectors for nodes based on genre embeddings.
+- load_and_clean_data: Loads and filters data, processes genres, and saves cleaned data.
+- build_graph: Constructs a graph from node and edge data.
+- calculate_pagerank: Calculates PageRank for nodes in the graph.
+- visualize_graph_matplotlib: Visualizes the graph using Matplotlib.
+- visualize_graph_pyvis: Visualizes the graph using PyVis.
+- print_graph_info: Prints information about the graph and its nodes.
+- get_genre_embedding_vector: Generates a mean embedding vector for a list of genres.
+- convert_2d_to_1d_embedding_dict: Converts 2D embeddings to a 1D format.
+- main: Main function that orchestrates the data preprocessing steps.
+"""
+
 from utils.BERTGenreProcessor import BERTGenreProcessor
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 from pyvis.network import Network
 import click
-import os, sys
-import random
-import ast
-import scipy.sparse
+import os
+import json
+from collections import defaultdict
 import numpy as np
+import concurrent.futures
 from tqdm import tqdm
 
+def convert_ndarray_to_list(data: np.ndarray) -> list:
+    """
+    Converts a NumPy array to a list. If the data is not a NumPy array, returns the data as is.
 
-def load_and_clean_data(nodes_path, edges_path, datadir):
+    Args:
+        data (np.ndarray): The NumPy array to be converted.
 
+    Returns:
+        list: The converted list.
+    """
+    if isinstance(data, np.ndarray):
+        return data.tolist()
+    return data
+
+
+def convert_list_to_string(data: list) -> str:
+    """
+    Converts a list to a JSON string. If the data is not a list, returns the data as is.
+
+    Args:
+        data (list): The list to be converted.
+
+    Returns:
+        str: The JSON string representation of the list.
+    """
+    if isinstance(data, list):
+        return json.dumps(data)
+    return data
+
+
+def preprocess_graph(G: nx.Graph) -> nx.Graph:
+    """
+    Preprocesses the graph to ensure that all attributes are compatible with GraphML format.
+    Converts ndarray and list attributes to JSON strings.
+
+    Args:
+        G (nx.Graph): The graph to be preprocessed.
+
+    Returns:
+        nx.Graph: The preprocessed graph.
+    """
+    for node in G.nodes(data=True):
+        node_id, attrs = node
+        for key, value in attrs.items():
+            value = convert_ndarray_to_list(value)
+            attrs[key] = convert_list_to_string(value)
+    
+    for edge in G.edges(data=True):
+        u, v, attrs = edge
+        for key, value in attrs.items():
+            value = convert_ndarray_to_list(value)
+            attrs[key] = convert_list_to_string(value)
+    
+    return G
+
+
+def compute_node_embedding(node_id: str, genre_embeddings_dict: dict, embedding_dim: int, genres_dictionary: dict) -> tuple:
+    """
+    Computes the embedding vector for a node based on its genres.
+
+    Args:
+        node_id (str): The ID of the node.
+        genre_embeddings_dict (dict): A dictionary of genre embeddings.
+        embedding_dim (int): The dimensionality of the embeddings.
+
+    Returns:
+        tuple: A tuple containing the node ID and the computed embedding vector.
+    """
+    node_genres = genres_dictionary[node_id]
+    if node_genres:
+        embedding_vector = get_genre_embedding_vector(node_genres, genre_embeddings_dict)
+        
+        # Ensure embedding vector has the correct length
+        assert len(embedding_vector) == embedding_dim, "Dimension of embeddings shouldn't change, check logic"
+        
+        return node_id, embedding_vector
+    else:
+        return node_id, None
+
+
+def load_and_clean_data(nodes_path: str, edges_path: str, datadir: str) -> tuple:
+    """
+    Loads and cleans node and edge data. Filters out nodes based on empty genres or low followers,
+    processes genres, and saves the cleaned data.
+
+    Args:
+        nodes_path (str): Path to the CSV file containing node data.
+        edges_path (str): Path to the CSV file containing edge data.
+        datadir (str): Directory to save the processed files.
+
+    Returns:
+        tuple: DataFrames for nodes and edges, and a set of all unique genres.
+    """
     # Load data
     nodes_df = pd.read_csv(nodes_path)
     edges_df = pd.read_csv(edges_path)
@@ -62,11 +182,18 @@ def load_and_clean_data(nodes_path, edges_path, datadir):
 
     # Step 5: Process and export unique genres
     # Normalize the genres column to ensure it's a list of strings
-    def parse_genres(genres):
+    def parse_genres(genres: str) -> list:
+        """
+        Converts genre strings to lists and ensures genres are valid strings.
+
+        Args:
+            genres (str): The genre string to be converted.
+
+        Returns:
+            list: A list of valid genres.
+        """
         try:
-            # Convert string representation of list to actual list
             genres_list = eval(genres) if isinstance(genres, str) else genres
-            # Ensure genres_list is a list of strings
             if isinstance(genres_list, list):
                 return [genre for genre in genres_list if isinstance(genre, str) and genre.strip()]
         except (SyntaxError, ValueError):
@@ -104,29 +231,61 @@ def load_and_clean_data(nodes_path, edges_path, datadir):
 
     return nodes_df, edges_df, all_genres
 
-def build_graph(nodes_df, edges_df):
-    G = nx.Graph()
 
-    # Add nodes with metadata
+def build_graph(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Graph:
+    """
+    Constructs a graph from the node and edge DataFrames.
+
+    Args:
+        nodes_df (pd.DataFrame): DataFrame containing node information.
+        edges_df (pd.DataFrame): DataFrame containing edge information.
+
+    Returns:
+        nx.Graph: The constructed graph.
+    """
+    G = nx.Graph()
+    genres_dictionary = defaultdict(list)
+
     for index, row in nodes_df.iterrows():
         G.add_node(row['spotify_id'], 
                    name=row['name'], 
                    followers=row['followers'], 
                    popularity=row['popularity'],
-                   genres=row['genres'])
+                   embedding="",
+                   pagerank=0.0)
+        
+        genres_dictionary[row['spotify_id']] = genres=row['genres']
+        
     
-    # Add edges
     for index, row in edges_df.iterrows():
         G.add_edge(row['id_0'], row['id_1'])
 
-    return G
+    return G, genres_dictionary
 
-def calculate_pagerank(G):
+
+def calculate_pagerank(G: nx.Graph) -> dict:
+    """
+    Calculates the PageRank of nodes in the graph.
+
+    Args:
+        G (nx.Graph): The graph for which PageRank is to be computed.
+
+    Returns:
+        dict: A dictionary with nodes as keys and their PageRank as values.
+    """
     pagerank_dict = nx.pagerank(G)
     nx.set_node_attributes(G, pagerank_dict, 'pagerank')
     return pagerank_dict
 
-def visualize_graph_matplotlib(G, datadir):
+
+def visualize_graph_matplotlib(G: nx.Graph, datadir: str):
+    """
+    Visualizes the graph using Matplotlib.
+
+    Args:
+        G (nx.Graph): The graph to be visualized.
+        save_path (str): The path to save the visualization image.
+    """
     plt.figure(figsize=(12, 12))
     pos = nx.spring_layout(G, k=0.15)
     node_color = [G.nodes[n]['pagerank'] for n in G.nodes]
@@ -137,11 +296,18 @@ def visualize_graph_matplotlib(G, datadir):
     plt.savefig(savepath)
     plt.show()
 
-def visualize_graph_pyvis(G, datadir):
+
+def visualize_graph_pyvis(G: nx.Graph, datadir: str):
+    """
+    Visualizes the graph using PyVis.
+
+    Args:
+        G (nx.Graph): The graph to be visualized.
+        save_path (str): The path to save the visualization HTML file.
+    """
     net = Network(notebook=True)
     click.secho("Drawing graph with pyvis...", fg='green', bold=True)
 
-    # Add nodes and edges
     for node in G.nodes(data=True):
         name = node[1].get('name', 'Unknown')
         popularity = node[1].get('popularity', 'N/A')
@@ -154,11 +320,18 @@ def visualize_graph_pyvis(G, datadir):
     for edge in G.edges():
         net.add_edge(edge[0], edge[1])
 
-    # Generate the HTML file
     savepath = os.path.join(datadir, "processed/collabrank_graph.html")
     net.show(savepath)
 
-def print_graph_info(G):
+
+def print_graph_info(G: nx.Graph):
+    """
+    Prints information about the graph including the number of nodes, edges,
+    and a sample of nodes and edges.
+
+    Args:
+        G (nx.Graph): The graph to be analyzed.
+    """
     click.secho("Graph Information:", fg="green", bold=True)
     click.secho(f"Number of nodes: {G.number_of_nodes()}", fg="green")
     click.secho(f"Number of edges: {G.number_of_edges()}", fg="green")
@@ -166,14 +339,24 @@ def print_graph_info(G):
     click.secho("Node Features:", fg="green", bold=True)
 
     for node, data in G.nodes(data=True):
-        # 'node' is the node ID itself
         node_id = node
-        features = {k: v for k, v in data.items() if k != 'spotify_id'}  # Exclude 'spotify_id' from features
+        features = {k: v for k, v in data.items() if k != 'spotify_id'}
         features_str = ', '.join(f"{k}: {v}" for k, v in features.items())
         
         click.secho(f"Node ID: {node_id}, Features: {features_str}", fg="green")
-        
-def get_genre_embedding_vector(genres, embedding_dict, max_length=5):
+
+
+def get_genre_embedding_vector(genres: list, embedding_dict: dict, max_length=5) -> np.ndarray:
+    """
+    Generates a mean embedding vector for a list of genres.
+
+    Args:
+        genres (list): A list of genres.
+        genre_embeddings_dict (dict): A dictionary mapping genres to their embedding vectors.
+
+    Returns:
+        np.ndarray: The mean embedding vector for the given genres.
+    """
     # Determine the dimensionality of the embeddings
     example_embedding = next(iter(embedding_dict.values()))
     embedding_dim = example_embedding.shape[0]
@@ -196,27 +379,40 @@ def get_genre_embedding_vector(genres, embedding_dict, max_length=5):
     
     return result_vector
 
-def convert_2d_to_1d_embedding_dict(embedding_dict):
+
+def convert_2d_to_1d_embedding_dict(embedding_dict: dict) -> dict:
+    """
+    Converts a dictionary of 2D embeddings to 1D format for easier storage or processing.
+
+    Args:
+        embedding_dict (dict): A dictionary where keys are nodes and values are 2D embeddings.
+
+    Returns:
+        dict: A dictionary where values are 1D embeddings.
+    """
     return {genre: np.array([embedding_dict[genre][i] for i in sorted(embedding_dict[genre])]) for genre in embedding_dict}
 
-def main():
-    datadir = os.environ.get("DATA_DIR")
 
-    # Check if the directory exists
+def main():
+    """
+    Main function that orchestrates the data preprocessing steps including loading,
+    cleaning, processing genres, building the graph, calculating PageRank, 
+    and visualizing the graph.
+    """
+    datadir = os.environ.get("DATA_DIR")
     if not os.path.isdir(datadir):
         click.secho("Please set the DATA_DIR environment variable and ensure the directory exists.", fg='red')
         
-    # Define paths to the CSV files
     nodes_path = os.path.join(datadir, 'raw', 'nodes.csv')
     edges_path = os.path.join(datadir, 'raw', 'edges.csv')
 
     # Load and clean data
     click.secho("Step 1: Cleaning input data...", fg="yellow", bold=True)
     nodes_df, edges_df, all_genres = load_and_clean_data(nodes_path, edges_path, datadir)
-
+    
     # Build graph
     click.secho("Step 2: Building graph...", fg="yellow", bold=True)
-    G = build_graph(nodes_df, edges_df)
+    G, genres_dictionary = build_graph(nodes_df, edges_df)
 
     # Calculate PageRank
     click.secho("Step 3: Calculating page rank for nodes...", fg="yellow", bold=True)
@@ -229,9 +425,7 @@ def main():
         print(f"Node {node}: PageRank {pagerank}")
 
     # Visualize graph with matplotlib
-    click.secho("Building graph Visualizations", fg="blue", bold=True)
-    
-    # Visualize the graph
+    # click.secho("Building graph Visualizations", fg="blue", bold=True)
     # visualize_graph_matplotlib(G, datadir)
     # visualize_graph_pyvis(G, datadir)
     
@@ -254,34 +448,33 @@ def main():
     else:
         print("All genre embeddings have the same size.")
     
-    # Integrate embeddings into graph nodes
-    # Get total node count
-    # Get total node count
-    totalcount = len(G.nodes)
-    count = 0
+    # Convert genre embeddings to the correct format
+    genre_embeddings_dict = genre_embeddings.to_dict(orient='index')
+    genresdict = convert_2d_to_1d_embedding_dict(genre_embeddings_dict)
 
-    # Initialize tqdm progress bar
-    with tqdm(total=totalcount, desc="Processing Nodes") as pbar:
-        for node, data in G.nodes(data=True):
-            node_id = node
-            if 'genres' in G.nodes[node_id]:
-                genres = G.nodes[node_id]['genres']
-                genre_embeddings_dict = genre_embeddings.to_dict(orient='index')
-                genresdict = convert_2d_to_1d_embedding_dict(genre_embeddings_dict)
-                embedding_vector = get_genre_embedding_vector(genres, genresdict)
-                
-                # Ensure embedding vector has the correct length
-                assert len(embedding_vector) == embedding_dim, "Dimension of embeddings shouldn't change, check logic"
-                
+    # Integrate embeddings into graph nodes with parallel processing
+    click.secho("Adding Genre embeddings as a feature...", fg="blue", bold=True)
+    
+    count = 0
+    embedding_dim = example_embedding.shape[0]
+    
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = {executor.submit(compute_node_embedding, node_id, genresdict, embedding_dim, genres_dictionary): node_id for node_id, data in G.nodes(data=True)}
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing Nodes"):
+            node_id, embedding_vector = future.result()
+            if embedding_vector is not None:
                 G.nodes[node_id]['embedding'] = embedding_vector
-            else:
-                click.secho("Genres list not found", fg="red", bold=True)
-                exit(-1)
-            
-            # Update the progress bar
-            pbar.update(1)
+            count += 1
+            click.secho(f"Processed {count}/{len(G.nodes)} Nodes", fg="blue")
+    
     click.secho("Added Genre embeddings as a feature!", fg="green", bold=True)
-    # print_graph_info(G)
+    
+    # Save Graph
+    graph_path = os.path.join(datadir, "processed/graph_with_embeddings.graphml")
+    G = preprocess_graph(G)
+    nx.write_graphml(G, graph_path)
+    click.secho(f"Graph with embeddings saved to {graph_path}", fg='green')
+
 
 if __name__ == "__main__":
     main()
