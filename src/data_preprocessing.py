@@ -176,6 +176,9 @@ def load_and_clean_data(nodes_path: str, edges_path: str, datadir: str) -> tuple
     # Step 4: Update edges DataFrame
     edges_df = edges_df[~edges_df['id_0'].isin(dropped_ids)]
     edges_df = edges_df[~edges_df['id_1'].isin(dropped_ids)]
+    
+    valid_node_ids = set(nodes_df['spotify_id'])
+    edges_df = edges_df[edges_df['id_0'].isin(valid_node_ids) & edges_df['id_1'].isin(valid_node_ids)]
 
     # Print updated edge count
     print(f"Edge count after filtering: {len(edges_df)}")
