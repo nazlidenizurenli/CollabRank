@@ -3,11 +3,14 @@ import networkx as nx
 import tensorflow as tf
 import tensorflow_gnn as tfgnn
 import os, sys
-from models.gnn_model import build_and_compile_gnn
-from models.mlp_model import build_and_compile_mlp
+from models.gnn_model import LinkPredictionGNN
+from models.mlp_model import build_mlp_model
 import numpy as np
 import random
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
 
 def split_data(features, labels, validation_split=0.2):
     X_train, X_val, y_train, y_val = train_test_split(features, labels, test_size=validation_split, random_state=42)
@@ -160,7 +163,6 @@ def load_graph_data(graph_file):
     print("GraphTensor created successfully.")
     print(f"Node features in GraphTensor: {tf_graph.node_sets['nodes'].features.keys()}")
     print(f"Edge sets in GraphTensor: {tf_graph.edge_sets.keys()}")
-    
     return tf_graph
 
 
@@ -184,32 +186,34 @@ def main():
     graphml = os.path.join(datadir, "processed/graph_with_embeddings.graphml")
     tf_graph = load_graph_data(graphml)
     
+    # Get and print the number of nodes
+    num_nodes = sum(size for size in tf_graph.node_sets['nodes'].sizes)
+    print(f"Number of nodes: {num_nodes}")
+    
+    # Get and print the number of edges
+    num_edges = sum(size for size in tf_graph.edge_sets['edges'].sizes)
+    print(f"Number of edges: {num_edges}")
+    
     # Step 2: Preapre data for training
     features, labels = prepare_data(tf_graph)
     print(f"Features shape: {features.shape}")
     print(f"Labels shape: {labels.shape}")
     
-    # Split the data into training and test sets
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
-    X_train_gnn, X_val, y_train_gnn, y_val = split_data(X_train, y_train, validation_split=0.2)
-
-
-    print(f"Training set size: {X_train.shape[0]}")
-    print(f"Test set size: {X_test.shape[0]}")
+    train_size = int(0.8 * len(labels))
+    train_features, train_labels = features[:train_size], labels[:train_size]
+    test_features, test_labels = features[train_size:], labels[train_size:]
     
-    # Comment out one of the following two blocks to switch between models
-
-    # GNN Model
-    gnn_model = build_and_compile_gnn(hidden_dim=64, output_dim=32)
-    gnn_history = gnn_model.fit((X_train_gnn, y_train_gnn), epochs=10, batch_size=32, validation_data=(tf_graph, y_val))
-    gnn_test_loss, gnn_test_accuracy = gnn_model.evaluate(X_test, y_test)
-    print(f"GNN Test accuracy: {gnn_test_accuracy:.4f}")
-
-    # MLP Model
-    mlp_model = build_and_compile_mlp(input_dim=features.shape[1])
-    mlp_history = mlp_model.fit(X_train, y_train, epochs=20, batch_size=32, validation_split=0.2)
-    mlp_test_loss, mlp_test_accuracy = mlp_model.evaluate(X_test, y_test)
-    print(f"MLP Test accuracy: {mlp_test_accuracy:.4f}")
+    # Step 3: Define the GNN model
+    gnn_model = LinkPredictionGNN()
+    gnn_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    
+    # Step 4: Train the model
+    history = gnn_model.fit(train_features, train_labels, epochs=10, batch_size=32, validation_split=0.2)
+    
+    # Step 5: Evaluate the model
+    test_loss, test_accuracy = gnn_model.evaluate(test_features, test_labels)
+    print(f"Test Loss: {test_loss}")
+    print(f"Test Accuracy: {test_accuracy}")
 
     
 if __name__ == "__main__":

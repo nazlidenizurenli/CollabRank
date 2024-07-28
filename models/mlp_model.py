@@ -1,14 +1,13 @@
 import tensorflow as tf
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.models import Sequential
+from sklearn.preprocessing import StandardScaler
 
-def build_and_compile_mlp(input_dim):
-    model = tf.keras.Sequential([
-        tf.keras.layers.InputLayer(input_shape=(input_dim,)),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(32, activation='relu'),
-        tf.keras.layers.Dense(1, activation='sigmoid')
-    ])
+def build_mlp_model(input_dim):
+    model = Sequential()
+    model.add(Dense(128, input_dim=input_dim, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)))
+    model.add(Dropout(0.5))
+    model.add(Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)))
+    model.add(Dense(1, activation='sigmoid'))
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
