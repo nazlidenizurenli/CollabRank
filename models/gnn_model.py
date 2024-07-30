@@ -1,21 +1,33 @@
 import tensorflow as tf
 import tensorflow_gnn as tfgnn
 
-class LinkPredictionGNN(tf.keras.Model):
-    def __init__(self):
-        super().__init__()
-        # Define GNN layers using alternative methods
-        self.graph_conv1 = tfgnn.GraphConv(units=64)  # Check if this is the right method
-        self.graph_conv2 = tfgnn.GraphConv(units=32)  # Check if this is the right method
-        self.dense = tf.keras.layers.Dense(1, activation='sigmoid')
-    
-    def call(self, graph_tensor, training=False):
-        # Apply graph convolutions and other operations
-        adjacency = graph_tensor.edge_sets['edges'].adjacency
-        node_features = graph_tensor.node_sets['nodes'].features
+class GNNLinkPredictionModel(tf.keras.Model):
+    def __init__(self, hidden_units, input_dim):
+        super(GNNLinkPredictionModel, self).__init__()
+        self.hidden_units = hidden_units
+        self.input_dim = input_dim
+        
+        # Define the layers
+        self.dense1 = tf.keras.layers.Dense(hidden_units, activation='relu')
+        self.dense2 = tf.keras.layers.Dense(hidden_units, activation='relu')
+        self.dense_out = tf.keras.layers.Dense(1, activation='sigmoid')
 
-        x = self.graph_conv1(node_features, adjacency)
-        x = self.graph_conv2(x, adjacency)
-        x = tf.reduce_mean(x, axis=1)  # Aggregating node embeddings
-        x = self.dense(x)
-        return x
+    def call(self, inputs):
+        # Apply dense layers to input features
+        x = self.dense1(inputs)
+        x = self.dense2(x)
+        
+        # Predict edge existence
+        edge_scores = self.dense_out(x)
+        return edge_scores
+
+def build_and_compile_model(hidden_units, input_dim):
+    model = GNNLinkPredictionModel(hidden_units=hidden_units, input_dim=input_dim)
+    model.build((None, input_dim)) 
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(),
+        loss=tf.keras.losses.BinaryCrossentropy(),
+        metrics=['accuracy']
+    )
+    return model
+
